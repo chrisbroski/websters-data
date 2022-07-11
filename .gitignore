@@ -1,0 +1,7 @@
+.idea
+.DS_Store
+node_modules/
+package-lock.json
+log.txt
+example.txt
+websters-1913.json
