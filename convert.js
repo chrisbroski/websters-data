@@ -83,6 +83,9 @@ function decode(txt) {
     txt = txt.replace("<asp><?/sophagus</asp>", "<asp>œsophagus</asp>");
     txt = txt.replace(/\\'3c--.*?--\\'3e/g, ""); // these seem to be hidden notes
     txt = txt.replace(/<table>.*?<\/table>/gs, "");
+    txt = txt.replace(/&or;/g, "or");
+    txt = txt.replace(/&icr;/g, "ĭ");
+    // &sect;
     txt = txt.replace(/<Xpage=<-- p\. 647  this page badly done>/g, ""); // unclosed comment
     txt = txt.replace(/<Xpage=<-- p\. 648 needs proofing ##proof>/g, ""); // unclosed comment
     txt = txt.replace(/<Xpage=<-- p\. 700  first paragraph, a portion of one starting on p\. 699,>/g, ""); // unclosed comment
@@ -140,8 +143,9 @@ function unwrap(text, left, right) {
 
 function getDef(text) {
     var def = {};
+    var def2 = {};
     if (text.indexOf("<mark>") > -1) {
-        def.mark = betweenTags(text, "mark");
+        def.mark = unwrap(betweenTags(text, "mark"), "[", "]");
         text = text.replace(/<mark>.+?<\/mark>/, "");
     }
     if (text.indexOf("<fld>") > -1) {
@@ -151,9 +155,56 @@ function getDef(text) {
     if (index === -1) {
         def.txt = text.replace("</def>", "");
     } else {
-        def.txt = toMd(text.slice(index + 5).replace("</def>", "").trim());
+        def.txt = toMd(betweenTags(text, 'def'));
+        // betweenTags(p, 'hw')
     }
-    return def;
+    var index = text.indexOf(`<def2>`);
+    if (index > -1) {
+    //     def2.txt = text.replace("</def>", "");
+    // } else {
+        // def2.txt = toMd(text.slice(index + 5).replace("</def>", "").trim());
+        def2.txt = toMd(betweenTags(betweenTags(text, 'def2'), 'def'));
+        // should get word class, field, etc. too
+    }
+    return [def, def2];
+}
+
+function getWordClasses(line) {
+    var tts
+    var foundWordClasses = [];
+    if (!line) {
+        return foundWordClasses;
+    }
+
+    tts = [...line.matchAll(/<tt>(.+?)<\/tt>/g)];
+    tts.forEach(tt => {
+        // this is getting too many word classes (when multiple defs are in one line)
+        tt = tt[1];
+        var allTs = tt.split(' or ').join('&').split('&').join(',').split(',');
+        allTs = allTs.map(t => t.trim());
+        if (tt === "n. sing. & pl." || tt === "n. sing & pl." || tt === "n.sing. & pl.") {
+            allTs = ["n.", "n. pl."];
+        }
+        if (tt === "v. i. & t." || tt === "v. i. &  t.") {
+            allTs = ["v. i.", "v. t."];
+        }
+        if (tt === "p. & a.") {
+            allTs = ["a."];
+        }
+
+        allTs.forEach(wts => {
+            if (wordClassesAlt[wts]) {
+                wts = wordClassesAlt[wts];
+            }
+            if (wordClasses.indexOf(wts) > -1) {
+                if (foundWordClasses.indexOf(wts) === -1) {
+                    foundWordClasses.push(wts);
+                }
+            }
+        });
+    });
+
+    return foundWordClasses;
 }
 
 function parseFirst(line) {
@@ -162,6 +213,8 @@ function parseFirst(line) {
         defs: []
     };
     var hws = [];
+    var wc;
+    var wcs;
     if (line.slice(0, 8) === '<hw><hw>') {
         hws = line.slice(0, line.lastIndexOf("<hw>")).split(",");
         hws.forEach(p => {
@@ -173,33 +226,26 @@ function parseFirst(line) {
     } else {
         defData.pronounciation.push(line.slice(4, line.indexOf("</hw>")));
     }
-    // get grammar class, first definition, etymology, and more
+    // get grammar class, first (and sometimes second) definition, etymology, and more
     if (line.indexOf("<wordforms>") > -1) {
         defData.wordforms = toMd(unwrap(betweenTags(line, 'wordforms'), "[", "]"));
     }
-    if (line.indexOf("<def>") > -1) {
-        defData.defs.push(getDef(line));
+    var defs;
+    if (line.indexOf("<def>") > -1 || line.indexOf("<def2>")) {
+        defs = getDef(line);
+        if (defs[0].txt) {
+            defData.defs.push(defs[0]);
+        }
+        if (defs[1].txt) {
+            defData.defs.push(defs[1]);
+        }
     }
     if (line.indexOf("<ety>") > -1) {
         defData.ety = toMd(unwrap(betweenTags(line, 'ety'), "[", "]"));
     }
+
     // wordClass
-    var first = line.indexOf("<tt>");
-    var start = line.indexOf("<tt>", first + 1);
-    if (start === -1) {
-        start = first;
-    }
-    defData.wordClass = betweenTags(line, "tt", start);
-    if (wordClasses.indexOf(defData.wordClass) === -1) {
-        delete defData.wordClass;
-    } else {
-        if (defData.wordClass === "v.t") {
-            defData.wordClass = "v. t.";
-        }
-        if (defData.wordClass === "v.i") {
-            defData.wordClass = "v. i.";
-        }
-    }
+    defData.wordClass = getWordClasses(line);
     log[log.length - 1] = `${log[log.length - 1]} ${defData.wordClass || ""}`;
 
     return defData;
@@ -291,6 +337,10 @@ function formatDef(def) {
 
     lines.forEach(line => {
         line = line.trim();
+        while (line.slice(0, 1) === "-") {
+            line = line.slice(1);
+        }
+        line = line.trim();
         if (skipLine(line)) {
             return;
         }
@@ -321,6 +371,10 @@ function formatDef(def) {
             defData.defs.push(getDef(line));
             return;
         }
+        if (/^<p><b>\d{1,2}<\/b>/.test(line)) {
+            defData.defs.push(getDef(line));
+            return;
+        }
         // All this stuff should be dealt with, but we'll skip it for now
         // weird "col" things
         if (/^<cs>/.test(line)) {
@@ -330,10 +384,10 @@ function formatDef(def) {
             return;
         }
         // maybe we trim leading dashes?
-        if (/^<cs><mcol>/.test(line) || /^-- <mcol>/.test(line) || /^-- <cs><mcol>/.test(line)) {
+        if (/^<cs><mcol>/.test(line) || /^<mcol>/.test(line)) {
             return;
         }
-        if (/^<col>/.test(line) || /^-- <col>/.test(line)) {
+        if (/^<col>/.test(line)) {
             return;
         }
         if (/^<blockquote>/.test(line)) {
@@ -348,7 +402,10 @@ function formatDef(def) {
         if (/^<i>/.test(line)) {
             return; // attribution for previous line
         }
-        if (/^-- <wordforms>/.test(line) || /^--- <wordforms>/.test(line) || /^--<wordforms>/.test(line)) {
+        // if (/^-- <wordforms>/.test(line) || /^--- <wordforms>/.test(line) || /^--<wordforms>/.test(line)) {
+        //     return;
+        // }
+        if (/^<wordforms>/.test(line)) {
             return;
         }
         if (/^<sd>/.test(line)) {
@@ -358,12 +415,65 @@ function formatDef(def) {
             return; // 3-column list of "un" words
         }
 
-        console.log(line.slice(0, 80));
+        // console.log(line.slice(0, 80));
     });
     return defData;
 }
 
-const wordClasses = ["n.", "v. t.", "v.t.", "v. i.", "v.i.", "a.", "adv.", "prep.", "n. pl.", "pron."];
+const wordClasses = ["n.", "a.", "v. t.", "v. i.", "adv.", "n. pl.", "i.", "p. p.", "v.", "interj.", "prep.", "pron.", "imp.", "conj.", "vb. n.", "p. a.", "obs. p. p.", "obs. imp.", "n. f.", "n. m.", "prefix.", "superl.", "suffix.", "a. f.", "a. m."];
+const wordClassesAlt = {
+    "v.t.": "v. t.",
+    "v.  t.": "v. t.",
+    "v. t..": "v. t.",
+    "v. t. v. t.": "v. t.",
+    "v.t": "v. t.",
+    "v.</def> t.": "v. t.",
+    "v.i.": "v. i.",
+    "n.pl.": "n. pl.",
+    "n.pl": "n. pl.",
+    "n pl.": "n. pl.",
+    "n  pl.": "n. pl.",
+    "n. pl": "n. pl.",
+    "n.  pl.": "n. pl.",
+    "n. plural": "n. pl.",
+    "n. sing.": "n.",
+    "n.sing.": "n.",
+    "n. sing": "n.",
+    "n. fem.": "n. f.",
+    "n. masc.": "n. m.",
+    "n.masc.": "n. m.",
+    "n. .": "n.",
+    "N.": "n.",
+    "n": "n.",
+    "n .": "n.",
+    "n..": "n.",
+    "n. <?/": "n.",
+    "p.": "n.",
+    "p.p.": "p. p.",
+    "P. p.": "p. p.",
+    "p. pr.": "p. p.",
+    "p.pr.": "p. p.",
+    "p. p": "p. p.",
+    "poss. pron.": "p. p.",
+    "possessive pron.": "p. p.",
+    "p.p": "p. p.",
+    "p.a.": "p. a.",
+    "a": "a.",
+    "a. .": "a.",
+    "adj.": "a.",
+    "adv": "adv.",
+    "ads.": "adv.",
+    "ADV.": "adv.",
+    "adb.": "adv.",
+    "obs.imp.": "obs. imp.",
+    "prep": "prep.",
+    "inerj.": "interj.",
+    "comj.": "conj.",
+    "vb. n": "vb. n.",
+    "vb.n.": "vb. n.",
+    "fem. a.": "a. f.",
+    "masc. a.": "a. m."
+};
 
 var log = [];
 async function load(fileName) {
@@ -407,6 +517,8 @@ async function load(fileName) {
 
     await fs.writeFile(`${__dirname}/websters-1913.json`, JSON.stringify(dict, null, "    "));
     await fs.writeFile(`${__dirname}/log.txt`, log.join("\n"));
+    console.log(`
+Entries: ${Object.keys(dict).length}`);
 }
 
 load('pg673.txt', 354);
