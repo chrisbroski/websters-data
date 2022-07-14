@@ -81,7 +81,13 @@ const char = [
 
 function decode(txt) {
     txt = txt.replace("<asp><?/sophagus</asp>", "<asp>œsophagus</asp>");
-    txt = txt.replace(/\\'3c--.*--\\'3e/g, ""); // these seem to be hidden notes
+    txt = txt.replace(/\\'3c--.*?--\\'3e/g, ""); // these seem to be hidden notes
+    txt = txt.replace(/<table>.*?<\/table>/gs, "");
+    txt = txt.replace(/<Xpage=<-- p\. 647  this page badly done>/g, ""); // unclosed comment
+    txt = txt.replace(/<Xpage=<-- p\. 648 needs proofing ##proof>/g, ""); // unclosed comment
+    txt = txt.replace(/<Xpage=<-- p\. 700  first paragraph, a portion of one starting on p\. 699,>/g, ""); // unclosed comment
+    //
+    txt = txt.replace(/<--.*?-->/gs, ""); // some of these "comments" seem like they should stay in, but which?
     char.forEach(r => {
         txt = txt.replace(r[0], r[1]);
     });
@@ -102,10 +108,12 @@ function toMd(line) {
     return line
         .replace(/<i>(.+?)<\/i>/g, "*$1*")
         .replace(/<spn>(.+?)<\/spn>/g, "*$1*")
+        .replace(/<stype>(.+?)<\/stype>/g, "*$1*")
         .replace(/<ets>(.+?)<\/ets>/g, "*$1*")
         .replace(/<ex>(.+?)<\/ex>/g, "*$1*")
         .replace(/<asp>(.+?)<\/asp>/g, "*$1*")
-        .replace(/<b>(.+?)<\/b>/g, "**$1**s")
+        .replace(/<b>(.+?)<\/b>/g, "**$1**")
+        .replace(/<col>(.+?)<\/col>/g, "**$1**")
         .replace(/<tt>(.+?)<\/tt>/g, "`$1`")
         .replace(/<as>/g, "")
         .replace(/<\/as>/g, "")
@@ -120,6 +128,16 @@ function toMd(line) {
         .replace(/<er>(.+?)<\/er>/g, "[$1](#$1)");
 }
 
+function unwrap(text, left, right) {
+    if (text.slice(0, 1) === left) {
+        text = text.slice(1);
+    }
+    if (text.slice(-1) === right) {
+        text = text.slice(0, -1);
+    }
+    return text.trim()
+}
+
 function getDef(text) {
     var def = {};
     if (text.indexOf("<mark>") > -1) {
@@ -127,7 +145,7 @@ function getDef(text) {
         text = text.replace(/<mark>.+?<\/mark>/, "");
     }
     if (text.indexOf("<fld>") > -1) {
-        def.fld = betweenTags(text, "fld");
+        def.fld = unwrap(betweenTags(text, "fld"), "(", ")");
     }
     var index = text.indexOf(`<def>`);
     if (index === -1) {
@@ -157,25 +175,13 @@ function parseFirst(line) {
     }
     // get grammar class, first definition, etymology, and more
     if (line.indexOf("<wordforms>") > -1) {
-        defData.wordforms = toMd(betweenTags(line, 'wordforms'));
-        if (defData.wordforms.slice(0, 1) === "[") {
-            defData.wordforms = defData.wordforms.slice(1).trim();
-        }
-        if (defData.wordforms.slice(-1) === "]") {
-            defData.wordforms = defData.wordforms.slice(0, -1).trim();
-        }
+        defData.wordforms = toMd(unwrap(betweenTags(line, 'wordforms'), "[", "]"));
     }
     if (line.indexOf("<def>") > -1) {
         defData.defs.push(getDef(line));
     }
     if (line.indexOf("<ety>") > -1) {
-        defData.ety = toMd(betweenTags(line, 'ety'));
-        if (defData.ety.slice(0, 1) === "[") {
-            defData.ety = defData.ety.slice(1).trim();
-        }
-        if (defData.ety.slice(-1) === "]") {
-            defData.ety = defData.ety.slice(0, -1).trim();
-        }
+        defData.ety = toMd(unwrap(betweenTags(line, 'ety'), "[", "]"));
     }
     // wordClass
     var first = line.indexOf("<tt>");
@@ -199,13 +205,95 @@ function parseFirst(line) {
     return defData;
 }
 
+function skipLine(line) {
+    if (!line) {
+        return true;
+    }
+    if (line === "<hr>") {
+        return true;
+    }
+    if (line.slice(0, 6) === "<page=") {
+        return true;
+    }
+    if (line.slice(0, 6) === "<cente") {
+        return true;
+    }
+    if (line.slice(0, 7) === "<Xpage=") {
+        return true;
+    }
+    if (line === "<mhw>") {
+        return true;
+    }
+    if (line === "-->") {
+        return true;
+    }
+    if (line === "</note>") {
+        return true;
+    }
+    if (line === "<usage>" || line === "</usage>") {
+        return true;
+    }
+    if (line === "</cs>") {
+        return true;
+    }
+    if (line === "</cd></cs>") {
+        return true;
+    }
+    if (line === "</def2>" || line === "</def>") {
+        return true;
+    }
+    if (line === "&colbreak;") {
+        return true;
+    }
+    //
+    // if (line === "<table>") {
+    //     console.log("!!!! table");
+    //     return true;
+    // }
+    //
+    if (/Page \d{1,4}<p>/.test(line)) {
+        return true;
+    }
+    //Page 1137<p>
+    return false;
+}
+
 function formatDef(def) {
     var defData = {};
     var firstLine;
 
     // defData.def = cleanLine(def);
     def = def.split('\r\n');
+
+    //trim useless data and combine blockquotes
+    var lines = [];
+    var blockOpen;
     def.forEach(line => {
+        if (!blockOpen && skipLine(line)) {
+            return;
+        }
+        if (blockOpen) {
+            if (!line) {
+                return;
+            }
+            lines[lines.length - 1] = `${lines[lines.length - 1]} ${line.trim()}`;
+            if (/<\/blockquote>$/.test(line)) {
+                blockOpen = false;
+            }
+        } else {
+            lines.push(line);
+        }
+
+        if (/^<blockquote>/.test(line)) {
+            blockOpen = true;
+        }
+    });
+
+    lines.forEach(line => {
+        line = line.trim();
+        if (skipLine(line)) {
+            return;
+        }
         if (line.slice(0, 5) === '<syn>') {
             defData.syn = {};
             defData.syn.text = betweenTags(line, 'syn');
@@ -231,7 +319,46 @@ function formatDef(def) {
         }
         if (/^<p><b>\d{1,2}\.<\/b>/.test(line)) {
             defData.defs.push(getDef(line));
+            return;
         }
+        // All this stuff should be dealt with, but we'll skip it for now
+        // weird "col" things
+        if (/^<cs>/.test(line)) {
+            return;
+        }
+        if (/^<cs><col>/.test(line)) {
+            return;
+        }
+        // maybe we trim leading dashes?
+        if (/^<cs><mcol>/.test(line) || /^-- <mcol>/.test(line) || /^-- <cs><mcol>/.test(line)) {
+            return;
+        }
+        if (/^<col>/.test(line) || /^-- <col>/.test(line)) {
+            return;
+        }
+        if (/^<blockquote>/.test(line)) {
+            return;
+        }
+        if (/^<note>/.test(line)) {
+            return;
+        }
+        if (/<\/h1>$/.test(line)) {
+            return; // we should have already got the info we need from the header lines
+        }
+        if (/^<i>/.test(line)) {
+            return; // attribution for previous line
+        }
+        if (/^-- <wordforms>/.test(line) || /^--- <wordforms>/.test(line) || /^--<wordforms>/.test(line)) {
+            return;
+        }
+        if (/^<sd>/.test(line)) {
+            return; // sub-definition (a, b, etc.)
+        }
+        if (/^<colf>/.test(line)) {
+            return; // 3-column list of "un" words
+        }
+
+        console.log(line.slice(0, 80));
     });
     return defData;
 }
@@ -241,14 +368,14 @@ const wordClasses = ["n.", "v. t.", "v.t.", "v. i.", "v.i.", "a.", "adv.", "prep
 var log = [];
 async function load(fileName) {
     var txt = await fs.readFile(`${__dirname}/${fileName}`, 'utf8');
-    txt =  decode(txt);
+    txt = decode(txt);
     var json = txt.split("<h1>");
     var dict = {};
     var word;
 
     json.forEach((line, lineNum) => {
         // var ii;
-        var stopAt = 200;
+        var stopAt;// = 200;
         // var stopped = false;
         if (lineNum === 0 || (stopAt && lineNum > stopAt)) {
             return;
@@ -256,9 +383,10 @@ async function load(fileName) {
         word = line.slice(0, line.indexOf("</h1>")).split(' or ').join(',').split(',');
         word.forEach((w, i) => {
             w = w.trim();
-            if (wordClasses.indexOf(w.trim()) > -1) {
-                return;
-            }
+            // if (wordClasses.indexOf(w.trim()) > -1) {
+            //     console.log(w.trim());
+            //     return;
+            // }
             if (i === 0) {
                 if (!dict[w]) {
                     dict[w] = [];
